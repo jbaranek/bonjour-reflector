@@ -11,6 +11,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+type vlanTimestamp struct {
+	Timestamp int64
+	VLAN uint16
+}
+
 func main() {
 	// Read config file and generate mDNS forwarding maps
 	configPath := flag.String("config", "config.toml", "Config file in TOML format")
@@ -33,8 +38,8 @@ func main() {
 	if err != nil {
 		logrus.Fatalf("Could not read configuration: %v", err)
 	}
-	poolsMap := mapByPool(cfg.Devices)
-	vlanIPMap := mapIpSourceByVlan(cfg.VlanIPSource)
+	poolsMap := mapByPool(cfg.Devices, cfg.Vlans)
+	vlanIPMap := mapIpSourceByVlan(cfg.Vlans)
 
 	intf, err := net.InterfaceByName(cfg.NetInterface)
 	if err != nil {
@@ -48,9 +53,15 @@ func main() {
 	go ownupNetworkAddresses(cfg.NetInterface, srcMACAddress, vlanIPMap, stop)
 
 	allowedMacsMap := mapLowerCaseMac(cfg.Devices)
+	sharedPoolsByVlanMap := mapByVlan(cfg.Vlans)
+
+	lastMacTimestampByVlanMap := make(map[macAddress]vlanTimestamp)
+	
+
+
 	go processSSDPPackets(cfg.NetInterface, srcMACAddress, poolsMap, vlanIPMap, allowedMacsMap)
 
-	processBonjourPackets(cfg.NetInterface, srcMACAddress, poolsMap, vlanIPMap, allowedMacsMap)
+	processBonjourPackets(cfg.NetInterface, srcMACAddress, poolsMap, vlanIPMap, allowedMacsMap, sharedPoolsByVlanMap, lastMacTimestampByVlanMap)
 
 }
 

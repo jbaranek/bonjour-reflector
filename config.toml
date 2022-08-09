@@ -27,3 +27,6 @@ net_interface = "wls1" # Put here the network interface you want to use.
 
     [vlan.1547]
     ip_source = "192.168.3.253"
+
+    [vlan.1000]
+    shared_pools = [1001, 1002]     # Allow all devices on VLAN 1000 to be used on VLANs 1001, 1002

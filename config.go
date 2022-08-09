@@ -15,7 +15,7 @@ type macAddress string
 type config struct {
 	NetInterface string                         `toml:"net_interface"`
 	Devices      map[macAddress]multicastDevice `toml:"devices"`
-	VlanIPSource map[vlanID]vlanIpSource        `toml:"vlan"`
+	Vlans		 map[vlanID]vlanIpSource        `toml:"vlan"`
 }
 
 type multicastDevice struct {
@@ -26,6 +26,7 @@ type multicastDevice struct {
 type vlanID string
 type vlanIpSource struct {
 	IpSource net.IP `toml:"ip_source"`
+	SharedPools []uint16 `toml:"shared_pools"`
 }
 
 func readConfig(path string) (cfg config, err error) {
@@ -37,7 +38,7 @@ func readConfig(path string) (cfg config, err error) {
 	return cfg, err
 }
 
-func mapByPool(devices map[macAddress]multicastDevice) map[uint16]([]uint16) {
+func mapByPool(devices map[macAddress]multicastDevice, vlans map[vlanID]vlanIpSource) map[uint16]([]uint16) {
 	seen := make(map[uint16]map[uint16]bool)
 	poolsMap := make(map[uint16]([]uint16))
 	for _, device := range devices {
@@ -48,6 +49,22 @@ func mapByPool(devices map[macAddress]multicastDevice) map[uint16]([]uint16) {
 			if _, ok := seen[pool][device.OriginPool]; !ok {
 				seen[pool][device.OriginPool] = true
 				poolsMap[pool] = append(poolsMap[pool], device.OriginPool)
+			}
+		}
+	}
+	for vlan, value := range vlans {
+		vlanID, err := strconv.Atoi(string(vlan))
+		if err != nil {
+			logrus.Errorf("cannot decode %s to vlanID\n", vlan)
+			continue
+		}
+		for _, pool := range value.SharedPools {
+			if _, ok := seen[pool]; !ok {
+				seen[pool] = make(map[uint16]bool)
+			}
+			if _, ok := seen[pool][uint16(vlanID)]; !ok {
+				seen[pool][uint16(vlanID)] = true
+				poolsMap[pool] = append(poolsMap[pool], uint16(vlanID))
 			}
 		}
 	}
@@ -75,4 +92,17 @@ func mapLowerCaseMac(devices map[macAddress]multicastDevice) map[macAddress]mult
 		newDevices[macAddress(lowerCaseMac)] = device
 	}
 	return newDevices
+}
+
+func mapByVlan(vlans map[vlanID]vlanIpSource) map[uint16]([]uint16) {
+	vlanMap := make(map[uint16]([]uint16))
+	for vlan, value := range vlans {
+		vlanID, err := strconv.Atoi(string(vlan))
+		if err != nil {
+			logrus.Errorf("cannot decode %s to vlanID\n", vlan)
+			continue
+		}
+		vlanMap[uint16(vlanID)] = value.SharedPools
+	}
+	return vlanMap
 }

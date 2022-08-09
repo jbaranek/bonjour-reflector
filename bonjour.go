@@ -10,7 +10,27 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func processBonjourPackets(netInterface string, srcMACAddress net.HardwareAddr, poolsMap map[uint16][]uint16, vlanIPMap map[uint16]net.IP, allowedMacsMap map[macAddress]multicastDevice) {
+
+func macRecentlySeenOnAnotherVLAN(vlan uint16, srcMACAddress net.HardwareAddr, lastTimestampByVlanMap map[macAddress]vlanTimestamp) bool {
+	srcMAC := macAddress(srcMACAddress.String())
+	last, haveMac := lastTimestampByVlanMap[srcMAC]
+	seen := false
+	currentTime := time.Now().Unix()
+	if haveMac {
+		if last.VLAN != vlan { 
+			if (last.Timestamp+300 < currentTime) {
+				seen = true
+			}
+		}
+	}
+	if (seen) {
+		logrus.Warningf("MAC switching VLANS : %s. Config expected traffic from VLAN %d, got a packet from VLAN %d.", srcMACAddress.String(),  last.VLAN, vlan)
+	}
+	lastTimestampByVlanMap[srcMAC] = vlanTimestamp{currentTime, vlan}
+	return seen
+}
+
+func processBonjourPackets(netInterface string, srcMACAddress net.HardwareAddr, poolsMap map[uint16][]uint16, vlanIPMap map[uint16]net.IP, allowedMacsMap map[macAddress]multicastDevice, sharedPoolsByVlanMap map[uint16]([]uint16), lastMacTimestampByVlanMap map[macAddress]vlanTimestamp) {
 	var dstMacAddress net.HardwareAddr
 
 	// Get a handle on the network interface
@@ -45,6 +65,10 @@ func processBonjourPackets(netInterface string, srcMACAddress net.HardwareAddr, 
 
 		// Forward the mDNS query or response to appropriate VLANs
 		if bonjourPacket.isDNSQuery {
+			if macRecentlySeenOnAnotherVLAN(*bonjourPacket.vlanTag, srcMACAddress, lastMacTimestampByVlanMap) {
+				continue
+			}
+			
 			tags, ok := poolsMap[*bonjourPacket.vlanTag]
 			if !ok {
 				continue
@@ -60,17 +84,27 @@ func processBonjourPackets(netInterface string, srcMACAddress net.HardwareAddr, 
 				sendPacket(rawTraffic, &bonjourPacket, tag, srcMACAddress, dstMacAddress, srcIP, nil)
 			}
 		} else {
+			if macRecentlySeenOnAnotherVLAN(*bonjourPacket.vlanTag, srcMACAddress, lastMacTimestampByVlanMap) {
+				continue
+			}
 
 			device, ok := allowedMacsMap[macAddress(bonjourPacket.srcMAC.String())]
-			if !ok {
-				continue
+			var sharedPools []uint16
+			if ok {
+				sharedPools = device.SharedPools[:]
+				if device.OriginPool != *bonjourPacket.vlanTag {
+					logrus.Warningf("spoofing/vlan leak detected from %s. Config expected traffic from VLAN %d, got a packet from VLAN %d.", bonjourPacket.srcMAC.String(), device.OriginPool, *bonjourPacket.vlanTag)
+					continue
+				}
+			} else {
+				sharedPools, ok = sharedPoolsByVlanMap[*bonjourPacket.vlanTag]
+				if !ok {
+					continue
+				}
 			}
-			if device.OriginPool != *bonjourPacket.vlanTag {
-				logrus.Warningf("spoofing/vlan leak detected from %s. Config expected traffic from VLAN %d, got a packet from VLAN %d.", bonjourPacket.srcMAC.String(), device.OriginPool, *bonjourPacket.vlanTag)
-				continue
-			}
+			
 
-			for _, tag := range device.SharedPools {
+			for _, tag := range sharedPools {
 				if !bonjourPacket.isIPv6 {
 					srcIP, ok = vlanIPMap[tag]
 					if !ok {
